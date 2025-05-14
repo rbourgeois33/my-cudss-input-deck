@@ -1,6 +1,6 @@
 How to use:
 
-Download cuDSS as a tarball
+Download cuDSS as a tarball: https://developer.nvidia.com/cudss-downloads?target_os=Linux&target_arch=x86_64&Distribution=Agnostic&cuda_version=12
 
 then go into /cuDSS/libcudss-linux-x86_64-0.5.0.16_cuda12-archive/examples (adapt link)
 
