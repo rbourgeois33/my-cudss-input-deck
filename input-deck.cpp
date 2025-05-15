@@ -232,6 +232,11 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    if(((reorder_alg==1)||(reorder_alg==2)) && (mtype!=CUDSS_MTYPE_GENERAL)){
+        std::cerr << "Error: Invalid algorithm, algs 1 and 2 are only for non sym / non hermitian matrices." << std::endl;
+        return EXIT_FAILURE;
+    }
+
     // Parse matrix view
     cudssMatrixViewType_t mview;
     if (strcmp(argv[3], "full") == 0)
