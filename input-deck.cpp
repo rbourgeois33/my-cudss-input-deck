@@ -57,64 +57,8 @@
 #include <iostream>
 #include <vector>
 
-// Function to compute L2 norm of residual r = Ax - b
-double compute_residual_error(int n, int *csr_offsets_h, int *csr_columns_h,
-                              double *csr_values_h, double *x_values_h, double *b_values_h)
-{
-    double error = 0.0;
-
-    for (int row = 0; row < n; row++)
-    {
-        double Ax_row = 0.0;
-
-        // Perform dot product of row with x
-        for (int idx = csr_offsets_h[row]; idx < csr_offsets_h[row + 1]; idx++)
-        {
-            int col = csr_columns_h[idx];
-            double val = csr_values_h[idx];
-            Ax_row += val * x_values_h[col];
-        }
-
-        // Compute difference from b
-        double diff = Ax_row - b_values_h[row];
-        error += diff * diff;
-    }
-
-    return sqrt(error); // L2 norm
-}
-
-
-double compute_residual_error_upper(int n, int *csr_offsets_h, int *csr_columns_h,
-    double *csr_values_h, double *x_values_h, double *b_values_h)
-{
-std::vector<double> Ax(n, 0.0);
-
-for (int row = 0; row < n; row++)
-{
-for (int idx = csr_offsets_h[row]; idx < csr_offsets_h[row + 1]; idx++)
-{
-int col = csr_columns_h[idx];
-double val = csr_values_h[idx];
-
-// Upper triangular means col >= row
-Ax[row] += val * x_values_h[col];
-
-// Mirror contribution for symmetric matrix
-if (col != row)
-Ax[col] += val * x_values_h[row];
-}
-}
-
-// Compute L2 norm of residual
-double error = 0.0;
-for (int i = 0; i < n; ++i)
-{
-double diff = Ax[i] - b_values_h[i];
-error += diff * diff;
-}
-
-return std::sqrt(error);
-}
+#include <cmath>
+#include <vector>
 
 #include "cudss.h"
 #include "matrix_market_reader.h"
@@ -127,6 +71,58 @@ return std::sqrt(error);
         b is the (dense) right-hand side vector (or a matrix),
         x is the (dense) solution vector (or a matrix).
 */
+
+double compute_residual_error(
+    int n,
+    const int* csr_offsets_h,
+    const int* csr_columns_h,
+    const double* csr_values_h,
+    const double* x_values_h,
+    const double* b_values_h,
+    cudssMatrixViewType_t mview)
+{
+    std::vector<double> Ax(n, 0.0);
+
+    for (int row = 0; row < n; ++row)
+    {
+        for (int idx = csr_offsets_h[row]; idx < csr_offsets_h[row + 1]; ++idx)
+        {
+            int col = csr_columns_h[idx];
+            double val = csr_values_h[idx];
+
+            switch (mview)
+            {
+                case CUDSS_MVIEW_FULL:
+                    Ax[row] += val * x_values_h[col];
+                    break;
+
+                case CUDSS_MVIEW_UPPER:
+                    if (col >= row) {
+                        Ax[row] += val * x_values_h[col];
+                        if (col != row) Ax[col] += val * x_values_h[row];
+                    }
+                    break;
+
+                case CUDSS_MVIEW_LOWER:
+                    if (col <= row) {
+                        Ax[row] += val * x_values_h[col];
+                        if (col != row) Ax[col] += val * x_values_h[row];
+                    }
+                    break;
+            }
+        }
+    }
+
+    // Compute L2 norm of residual
+    double error = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        double diff = Ax[i] - b_values_h[i];
+        error += diff * diff;
+    }
+
+    return std::sqrt(error);
+}
 
 #define CUDSS_EXAMPLE_FREE       \
     do                           \
@@ -228,13 +224,18 @@ int main(int argc, char *argv[])
         mtype = CUDSS_MTYPE_HPD;
     else
     {
-        std::cerr << "Error: Invalid matrix type." << std::endl;
+        std::cerr << "\033[38;5;196m"
+          << "Error: Invalid matrix  type."
+          << "\033[0m" << std::endl;
         return EXIT_FAILURE;
     }
 
     if(((reorder_alg==1)||(reorder_alg==2)) && (mtype!=CUDSS_MTYPE_GENERAL)){
-        std::cerr << "Error: Invalid algorithm, algs 1 and 2 are only for non sym / non hermitian matrices." << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << "\033[38;5;208m"  // Set text color to orange (color index 208)
+          << "WARNING: Invalid algorithm, algorithms 1 and 2 are only for non sym / non hermitian matrices.\n"
+          << "See cudssConfigParam_t section of https://docs.nvidia.com/cuda/cudss/types.html\n"
+          << "Expect a large error."
+          << "\033[0m" << std::endl;  // Reset text color
     }
 
     // Parse matrix view
@@ -247,8 +248,18 @@ int main(int argc, char *argv[])
         mview = CUDSS_MVIEW_UPPER;
     else
     {
-        std::cerr << "Error: Invalid matrix view type." << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << "\033[38;5;196m"
+          << "Error: Invalid matrix view type."
+          << "\033[0m" << std::endl;        
+          return EXIT_FAILURE;
+    }
+
+    if ((mview ==CUDSS_MVIEW_LOWER || mview==CUDSS_MVIEW_UPPER)&&(mtype==CUDSS_MTYPE_GENERAL)){
+        std::cerr << "\033[38;5;208m"
+          << "WARNING: you chose a lower/upper view of the matrix but you also specified that it is general (not symmetric)\n"
+          << "if your matrix file, is truly non symmetric, half of the elements will not be used, as the lower / upper part of the \n"
+          << "matrix will be mirrored and you will be solving for the wrong matrix. Or the reader will throw an error."
+          << "\033[0m" << std::endl;
     }
 
     // Matrix and optional vector filenames
@@ -266,7 +277,13 @@ int main(int argc, char *argv[])
     double *x_values_d = NULL, *b_values_d = NULL;
 
     /* Read input matrix from file and allocate host memory accordingly */
-    matrix_reader(matrix_filename, n, nnz, &csr_offsets_h, &csr_columns_h, &csr_values_h);
+    int failed = matrix_reader(matrix_filename, n, nnz, &csr_offsets_h, &csr_columns_h, &csr_values_h, mview);
+    if (failed){
+       std::cerr << "\033[38;5;196m"
+          << "Reader failed."
+          << "\033[0m" << std::endl;
+        return EXIT_FAILURE;
+    }
 
     printf("---------------------------------------------------------\n");
     printf("cuDSS example: solving a real linear %dx%d system from file \"%s\"\n", n, n, matrix_filename);
@@ -279,11 +296,16 @@ int main(int argc, char *argv[])
     /* Read from file if rhs file is provided */
     if (vector_filename != nullptr)
     {
-        rhs_reader(vector_filename, n, &b_values_h);
+        int failed = rhs_reader(vector_filename, n, &b_values_h);
+        if (failed){
+        std::cerr << "\033[38;5;196m"
+          << "Reader failed."
+          << "\033[0m" << std::endl;        return EXIT_FAILURE;
+    }
     }
     else
     {
-        std::cout << "No rhs file provided, filling b with 1.0 \n";
+        std::cout << "\033[38;5;208m No rhs file provided, filling b with 1.0 \033[0m\n";
         b_values_h = (double *)malloc(nrhs * n * sizeof(double));
         for (int i = 0; i < n; i++)
         {
@@ -362,7 +384,8 @@ int main(int argc, char *argv[])
 
     /* Create a matrix object for the sparse input matrix. */
     cudssMatrix_t A;
-
+    
+    printf("--- Starting resolution and timing --- \n");
     cudaEventRecord(start);
     cudssIndexBase_t base = CUDSS_BASE_ZERO;
     CUDSS_CALL_AND_CHECK(cudssMatrixCreateCsr(&A, nrows, ncols, nnz, csr_offsets_d, NULL,
@@ -414,14 +437,12 @@ int main(int argc, char *argv[])
     
     double residual;
 
-    if (mtype==CUDSS_MTYPE_SYMMETRIC){
-        residual = compute_residual_error_upper(n, csr_offsets_h, csr_columns_h, csr_values_h, x_values_h, b_values_h);
-    }else{
-        residual = compute_residual_error(n, csr_offsets_h, csr_columns_h, csr_values_h, x_values_h, b_values_h);
-    }
-    printf("Residual L2 error ||Ax - b|| = %e\n", residual);
+    residual = compute_residual_error(n, csr_offsets_h, csr_columns_h, csr_values_h, x_values_h, b_values_h, mview);
+    
     printf("cuDSS Total time: %.4f ms\n", total_ms);
+    printf("--- Resolution over ! --- \n");
 
+    printf("Residual L2 error ||Ax - b|| = %e\n", residual);
     bool passed = (residual < 1e-5);
 
     /* Destroying opaque objects, matrix wrappers and the cuDSS library handle */
@@ -438,12 +459,12 @@ int main(int argc, char *argv[])
 
     if (status == CUDSS_STATUS_SUCCESS && passed)
     {
-        printf("Example PASSED\n");
+        printf("\033[32m Example PASSED \033[0m\n");
         return 0;
     }
     else
     {
-        printf("Example FAILED\n");
+        printf("\033[38;5;196m Example FAILED \033[0m\n");
         return -1;
     }
 }
