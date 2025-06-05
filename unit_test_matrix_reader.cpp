@@ -250,3 +250,52 @@ TEST(MatrixReaderTest, WrongNnz) {
     free(cols);
     free(values);
 }
+
+TEST(MatrixReaderTest, UnsortedColumnsWithEmptyRows) {
+    std::string content =
+        "%%MatrixMarket matrix coordinate real general\n"
+        "6 6 5\n"
+        "6 2 6.0\n" // Row 5: one entry at col 1
+        "2 6 2.0\n"  // Row 1: one entry at col 5
+        // Row 2: empty
+        "4 3 4.0\n"  // Row 3: entry at col 2
+        "4 1 3.0\n"  // Row 3: entry at col 0 (unordered)
+        // Row 4: empty
+        "1 3 1.0\n";  // Row 0: one entry at col 2
+
+    write_temp_file("test_unsorted_empty.mtx", content);
+
+    int n, nnz, *offsets, *cols;
+    double* values;
+    int result = matrix_reader<double>("test_unsorted_empty.mtx", n, nnz, &offsets, &cols, &values, CUDSS_MVIEW_FULL, false, false);
+
+    ASSERT_EQ(result, 0);
+    ASSERT_EQ(n, 6);
+    ASSERT_EQ(nnz, 5);
+
+    // offsets should be size n+1 = 7
+    ASSERT_EQ(offsets[0], 0); // row 0
+    ASSERT_EQ(offsets[1], 1); // row 1
+    ASSERT_EQ(offsets[2], 2); // row 2 (empty)
+    ASSERT_EQ(offsets[3], 2); // row 3 (start of data for row 3)
+    ASSERT_EQ(offsets[4], 4); // row 4 (empty)
+    ASSERT_EQ(offsets[5], 4); // row 5
+    ASSERT_EQ(offsets[6], 5); // end
+
+    // Values in original order (unsorted within rows)
+    ASSERT_EQ(values[0], 1.0); // row 0, col 2
+    ASSERT_EQ(values[1], 2.0); // row 1, col 5
+    ASSERT_EQ(values[2], 3.0); // row 3, col 2
+    ASSERT_EQ(values[3], 4.0); // row 3, col 0
+    ASSERT_EQ(values[4], 6.0); // row 5, col 1
+
+    ASSERT_EQ(cols[0], 2);
+    ASSERT_EQ(cols[1], 5);
+    ASSERT_EQ(cols[2], 0);
+    ASSERT_EQ(cols[3], 2);
+    ASSERT_EQ(cols[4], 1);
+
+    free(offsets);
+    free(cols);
+    free(values);
+}
